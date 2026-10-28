@@ -1,0 +1,103 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Church {
+  id              String                 @id
+  name            String
+  location        String
+  monthlyGoal     Float
+  openingBalance  Float
+  version         Int                    @default(0)
+  transactions    FinancialTransaction[]
+  assets          ChurchAsset[]
+  events          ChurchEvent[]
+  people          ChurchPerson[]
+  commitments     ChurchCommitment[]
+  updatedAt       DateTime               @updatedAt
+}
+
+model FinancialTransaction {
+  id          String   @id
+  churchId    String
+  date        String
+  type        String
+  category    String
+  description String
+  amount      Float
+  method      String
+  church      Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  @@index([churchId, date])
+  @@index([churchId, category])
+}
+
+model ChurchAsset {
+  id          String   @id
+  churchId    String
+  code        String
+  name        String
+  category    String
+  location    String
+  status      String
+  value       Float
+  acquiredAt  String
+  responsible String
+  church      Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  @@unique([churchId, code])
+  @@index([churchId, name])
+}
+
+model ChurchEvent {
+  id             String   @id
+  churchId       String
+  title          String
+  type           String
+  date           String
+  time           String
+  location       String
+  leader         String
+  attendanceIds  String[] @default([])
+  visitors       Int      @default(0)
+  church         Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  @@index([churchId, date, time])
+}
+
+model ChurchPerson {
+  id            String   @id
+  churchId      String
+  name          String
+  phone         String
+  email         String
+  birthday      String
+  stage         String
+  group         String
+  firstVisit    String
+  notes         String
+  contactDates  String[] @default([])
+  church        Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  @@index([churchId, stage])
+  @@index([churchId, name])
+}
+
+model ChurchCommitment {
+  id               String   @id
+  churchId         String
+  name             String
+  category         String
+  totalAmount      Float
+  installments     Int
+  paidInstallments Int
+  nextDueDate      String
+  church           Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  @@index([churchId, nextDueDate])
+}
