@@ -74,10 +74,23 @@ export function peopleNeedingCare(
         }
       }
       if (person.stage === "membro" || person.stage === "frequentador") {
-        const last = lastSeen.get(person.id) ?? person.firstVisit;
+        const lastContact = person.contactDates.reduce(
+          (latest, date) => (date > latest ? date : latest),
+          "",
+        );
+        const last = [lastSeen.get(person.id), lastContact, person.firstVisit]
+          .filter((value): value is string => Boolean(value))
+          .reduce((latest, date) => (date > latest ? date : latest));
+        const hasAttendanceRecord = lastSeen.has(person.id);
         const days = daysBetween(last);
         if (days >= 21) {
-          return [{ person, reason: `Há ${days} dias sem participar`, urgency: days }];
+          return [{
+            person,
+            reason: hasAttendanceRecord
+              ? `Há ${days} dias sem participar`
+              : `Sem registro de presença — ${days} dias desde o último contato`,
+            urgency: days,
+          }];
         }
       }
       return [];

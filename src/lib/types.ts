@@ -51,6 +51,7 @@ export interface ChurchPerson {
   firstVisit: string;
   notes: string;
   contactDates: string[];
+  cellId?: string | null;
 }
 
 export interface ChurchCommitment {

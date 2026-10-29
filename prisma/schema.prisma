@@ -19,7 +19,82 @@ model Church {
   events          ChurchEvent[]
   people          ChurchPerson[]
   commitments     ChurchCommitment[]
+  users            User[]
+  budgetCategories BudgetCategory[]
+  cells            Cell[]
   updatedAt       DateTime               @updatedAt
+}
+
+model User {
+  id                 String    @id
+  churchId           String
+  name               String
+  email              String    @unique
+  phone              String    @default("")
+  role               String
+  passwordHash       String
+  mustChangePassword Boolean   @default(true)
+  active             Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+  lastLoginAt        DateTime?
+  church             Church    @relation(fields: [churchId], references: [id], onDelete: Cascade)
+
+  @@index([churchId])
+}
+
+model BudgetCategory {
+  id        String        @id
+  churchId  String
+  name      String
+  type      String
+  church    Church        @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  lines     BudgetLine[]
+
+  @@unique([churchId, name])
+}
+
+model BudgetLine {
+  id             String         @id
+  categoryId     String
+  year           Int
+  month          Int
+  plannedAmount  Float
+  category       BudgetCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, year, month])
+  @@index([categoryId, year])
+}
+
+model Cell {
+  id             String             @id
+  churchId       String
+  name           String
+  leader         String
+  auxiliar       String             @default("")
+  host           String             @default("")
+  weekday        String
+  time           String
+  address        String
+  neighborhood   String             @default("")
+  audience       String             @default("misto")
+  capacity       Int                @default(0)
+  supervisor     String             @default("")
+  church         Church             @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  members        ChurchPerson[]
+  attendances    CellAttendance[]
+
+  @@index([churchId])
+}
+
+model CellAttendance {
+  id             String   @id
+  cellId         String
+  date           String
+  attendeeIds    String[] @default([])
+  visitors       Int      @default(0)
+  cell           Cell     @relation(fields: [cellId], references: [id], onDelete: Cascade)
+
+  @@index([cellId, date])
 }
 
 model FinancialTransaction {
@@ -82,10 +157,13 @@ model ChurchPerson {
   firstVisit    String
   notes         String
   contactDates  String[] @default([])
+  cellId        String?
   church        Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  cell          Cell?    @relation(fields: [cellId], references: [id], onDelete: SetNull)
 
   @@index([churchId, stage])
   @@index([churchId, name])
+  @@index([cellId])
 }
 
 model ChurchCommitment {

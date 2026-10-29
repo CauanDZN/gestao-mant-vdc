@@ -2,10 +2,10 @@
 
 import {
   ArrowDownLeft,
-  ArrowLeft,
   ArrowRight,
   ArrowUpRight,
   Bell,
+  CalendarCheck,
   CalendarDays,
   Check,
   ChevronDown,
@@ -18,17 +18,20 @@ import {
   Download,
   Heart,
   LayoutDashboard,
+  Lock,
   MapPin,
-  Menu,
+  MessageCircle,
   Package,
   Plus,
   Search,
+  Settings as SettingsIcon,
+  UsersRound,
   Users,
   Wallet,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { createSeedDatabase } from "@/lib/seed";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   averageAttendance,
   currentMonth,
@@ -37,11 +40,15 @@ import {
   monthTotals,
   monthTransactions,
   peopleNeedingCare,
-  relativeDate,
   shiftMonth,
 } from "@/lib/selectors";
 import { formatCurrency, formatDate, initials } from "@/lib/format";
 import { downloadFile, toCsv, uid } from "@/lib/utils";
+import { useCurrentUser } from "@/lib/use-current-user";
+import { canAccessFinance, canAccessSettings, canEditFinance, ROLE_LABELS, type Role } from "@/lib/auth/roles";
+import { CellsView } from "@/components/cells-view";
+import { BudgetView } from "@/components/budget-view";
+import { SettingsView } from "@/components/settings-view";
 import type {
   ChurchAsset,
   ChurchDatabase,
@@ -53,19 +60,27 @@ import type {
   TransactionType,
 } from "@/lib/types";
 
-const STORAGE_KEY = "gestao-igreja-vdc-v1";
-
 const pages = [
   { id: "painel", label: "Painel", icon: LayoutDashboard },
   { id: "financeiro", label: "Financeiro", icon: Wallet },
   { id: "patrimonio", label: "Patrimônio", icon: Package },
   { id: "agenda", label: "Agenda", icon: CalendarDays },
   { id: "pessoas", label: "Pessoas", icon: Users },
+  { id: "celulas", label: "Células", icon: UsersRound },
+  { id: "configuracoes", label: "Configurações", icon: SettingsIcon },
 ] as const;
 
 type PageId = (typeof pages)[number]["id"];
-type Modal = "transaction" | "asset" | "event" | "person" | null;
+type Modal = "transaction" | "asset" | "event" | "person" | "attendance" | null;
 type FinanceTab = "lancamentos" | "orcamento" | "compromissos";
+
+function isPageVisible(id: PageId, role: Role): boolean {
+  if (role === "bispa") return true;
+  if (id === "financeiro") return canAccessFinance(role);
+  if (id === "configuracoes") return canAccessSettings(role);
+  if (id === "painel" || id === "agenda") return true;
+  return role !== "membro";
+}
 
 const eventLabels: Record<EventType, string> = {
   culto: "Culto",
@@ -81,29 +96,6 @@ const stageLabels: Record<PersonStage, string> = {
   frequentador: "Frequentador",
   membro: "Membro",
 };
-
-const categoryBudgets = [
-  { name: "Dízimos e ofertas", budget: 3400, color: "green" },
-  { name: "Contas da igreja", budget: 1050, color: "blue" },
-  { name: "Ministérios", budget: 600, color: "purple" },
-  { name: "Missões e ação social", budget: 800, color: "orange" },
-  { name: "Manutenção", budget: 450, color: "gold" },
-];
-
-function isChurchDatabase(value: unknown): value is ChurchDatabase {
-  if (!value || typeof value !== "object") return false;
-  const data = value as Record<string, unknown>;
-  return (
-    data.version === 1 &&
-    Array.isArray(data.transactions) &&
-    Array.isArray(data.assets) &&
-    Array.isArray(data.events) &&
-    Array.isArray(data.people) &&
-    Array.isArray(data.commitments) &&
-    typeof data.settings === "object" &&
-    typeof data.counters === "object"
-  );
-}
 
 function dateKey(date: Date): string {
   return [
@@ -121,6 +113,13 @@ function toLocalDate(value: string): Date {
 function avatarColor(name: string): string {
   const colors = ["sage", "blue", "peach", "lilac"];
   return colors[name.charCodeAt(0) % colors.length];
+}
+
+function whatsappLink(phone: string): string | null {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length < 8) return null;
+  const withCountry = digits.startsWith("55") ? digits : `55${digits}`;
+  return `https://wa.me/${withCountry}`;
 }
 
 function Badge({ children, tone = "neutral" }: { children: React.ReactNode; tone?: string }) {
@@ -402,7 +401,7 @@ function PersonForm({
           setError("Informe o nome da pessoa.");
           return;
         }
-        onSave({ name: name.trim(), phone: phone.trim(), email: email.trim(), birthday, stage, group: group.trim(), firstVisit: dateKey(new Date()), notes: "" });
+        onSave({ name: name.trim(), phone: phone.trim(), email: email.trim(), birthday, stage, group: group.trim(), firstVisit: dateKey(new Date()), notes: "", cellId: null });
       }}>
         <Field label="Nome completo"><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="Nome e sobrenome" /></Field>
         <div className="form-grid">
@@ -419,8 +418,64 @@ function PersonForm({
   );
 }
 
+function AttendanceForm({
+  event,
+  people,
+  onClose,
+  onSave,
+}: {
+  event: ChurchEvent;
+  people: ChurchPerson[];
+  onClose: () => void;
+  onSave: (attendeeIds: string[], visitors: number) => void;
+}) {
+  const [selected, setSelected] = useState<Set<string>>(new Set(event.attendanceIds));
+  const [visitors, setVisitors] = useState(String(event.visitors));
+
+  function toggle(id: string) {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <ModalFrame title="Marcar presença" subtitle={`${event.title} · ${formatDate(event.date)}`} icon={CalendarCheck} onClose={onClose}>
+      <form className="modal-form" onSubmit={(event2) => {
+        event2.preventDefault();
+        onSave([...selected], Number(visitors) || 0);
+      }}>
+        <div className="people-toolbar"><span className="result-count">{selected.size} de {people.length} marcados</span></div>
+        <div className="table-wrap" style={{ maxHeight: 280, overflowY: "auto" }}>
+          <table>
+            <tbody>
+              {people.map((person) => (
+                <tr key={person.id}>
+                  <td>
+                    <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <input type="checkbox" checked={selected.has(person.id)} onChange={() => toggle(person.id)} />
+                      <span>{person.name}</span>
+                    </label>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <Field label="Visitantes (não cadastrados)"><input inputMode="numeric" value={visitors} onChange={(event2) => setVisitors(event2.target.value)} placeholder="0" /></Field>
+        <div className="modal-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancelar</button><button className="button button-primary">Salvar presença <Check size={15} /></button></div>
+      </form>
+    </ModalFrame>
+  );
+}
+
 export default function ChurchApp() {
+  const router = useRouter();
+  const { user: currentUser, loading: userLoading, setUser } = useCurrentUser();
   const [db, setDb] = useState<ChurchDatabase | null>(null);
+  const [version, setVersion] = useState<number | null>(null);
   const [page, setPage] = useState<PageId>("painel");
   const [month, setMonth] = useState(currentMonth);
   const [search, setSearch] = useState("");
@@ -431,47 +486,88 @@ export default function ChurchApp() {
   const [storageError, setStorageError] = useState("");
   const [selectedDate, setSelectedDate] = useState(dateKey(new Date()));
   const [selectedStage, setSelectedStage] = useState<"todos" | PersonStage>("todos");
+  const [attendanceEventId, setAttendanceEventId] = useState<string | null>(null);
+  const skipNextSave = useRef(true);
 
   useEffect(() => {
-    const seed = createSeedDatabase();
-    try {
-      const saved = window.localStorage.getItem(STORAGE_KEY);
-      if (!saved) {
-        setDb(seed);
+    if (!userLoading && !currentUser) router.push("/login");
+  }, [userLoading, currentUser, router]);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/church")
+      .then(async (response) => {
+        if (response.status === 401) {
+          router.push("/login");
+          return null;
+        }
+        if (!response.ok) throw new Error("load-failed");
+        return response.json();
+      })
+      .then((payload) => {
+        if (!active || !payload) return;
+        setDb(payload.data);
+        setVersion(payload.version);
         setStorageReady(true);
-        return;
-      }
-      const parsed: unknown = JSON.parse(saved);
-      if (!isChurchDatabase(parsed)) {
-        setDb(seed);
-        setStorageError("Os dados salvos são de uma versão anterior ou estão inválidos. Inicie uma nova demonstração para continuar.");
-        return;
-      }
-      setDb(parsed);
-      setStorageReady(true);
-    } catch {
-      setDb(seed);
-      setStorageError("Não foi possível ler os dados salvos neste navegador. Inicie uma nova demonstração para continuar.");
-    }
-  }, []);
+      })
+      .catch(() => {
+        if (active) setStorageError("Não foi possível carregar os dados da igreja. Recarregue a página.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [router]);
 
   useEffect(() => {
-    if (!db || !storageReady) return;
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
-      setStorageError("");
-    } catch {
-      setStorageError("O armazenamento do navegador está indisponível. As alterações não serão mantidas ao fechar esta página.");
+    if (!db || version === null || !storageReady) return;
+    if (skipNextSave.current) {
+      skipNextSave.current = false;
+      return;
     }
-  }, [db, storageReady]);
+    let cancelled = false;
+    fetch("/api/church", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ version, data: db }),
+    })
+      .then(async (response) => {
+        if (cancelled) return;
+        if (response.status === 409) {
+          setStorageError("Os dados foram atualizados por outra pessoa agora há pouco. Recarregando...");
+          const fresh = await fetch("/api/church").then((response2) => response2.json());
+          skipNextSave.current = true;
+          setDb(fresh.data);
+          setVersion(fresh.version);
+          return;
+        }
+        if (!response.ok) {
+          setStorageError("Não foi possível salvar agora. Suas alterações continuam nesta tela.");
+          return;
+        }
+        const data = await response.json();
+        setVersion(data.version);
+        setStorageError("");
+      })
+      .catch(() => {
+        if (!cancelled) setStorageError("Não foi possível salvar agora. Verifique sua internet.");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db]);
 
   const activePage = pages.find((item) => item.id === page) ?? pages[0];
   const monthEntries = useMemo(() => db ? monthTransactions(db.transactions, month) : [], [db, month]);
   const totals = useMemo(() => monthTotals(monthEntries), [monthEntries]);
   const attention = useMemo(() => db ? peopleNeedingCare(db) : [], [db]);
+  const role = currentUser?.role ?? "membro";
+  const canWriteFinance = canEditFinance(role);
+  const visiblePages = pages.filter((item) => isPageVisible(item.id, role));
 
   function closeModal() {
     setModal(null);
+    setAttendanceEventId(null);
   }
 
   function addTransaction(data: Omit<FinancialTransaction, "id">) {
@@ -557,15 +653,32 @@ export default function ChurchApp() {
     });
   }
 
-  function resetDemo() {
-    try {
-      window.localStorage.removeItem(STORAGE_KEY);
-      setDb(createSeedDatabase());
-      setStorageReady(true);
-      setStorageError("");
-    } catch {
-      setStorageError("Não foi possível iniciar a demonstração. Verifique as permissões de armazenamento do navegador.");
-    }
+  function saveAttendance(attendeeIds: string[], visitors: number) {
+    const eventId = attendanceEventId;
+    setDb((current) => current && ({
+      ...current,
+      events: current.events.map((event) => event.id === eventId ? { ...event, attendanceIds: attendeeIds, visitors } : event),
+    }));
+    closeModal();
+  }
+
+  async function assignPersonCell(personId: string, cellId: string | null) {
+    const response = await fetch(`/api/people/${personId}/cell`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cellId }),
+    });
+    if (response.ok) updatePerson(personId, { cellId });
+  }
+
+  function updateChurchSettings(updates: ChurchDatabase["settings"]) {
+    setDb((current) => current && ({ ...current, settings: updates }));
+  }
+
+  async function handleLogout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    router.push("/login");
+    router.refresh();
   }
 
   function exportTransactions() {
@@ -576,17 +689,22 @@ export default function ChurchApp() {
     downloadFile(`prestacao-de-contas-${month}.csv`, toCsv(rows), "text/csv;charset=utf-8");
   }
 
-  if (!db) {
+  if (!db || userLoading || !currentUser) {
     return <main className="loading-screen"><span className="loading-mark"><Church size={23} /></span><p>Preparando a gestão da igreja…</p></main>;
   }
 
+  if (currentUser.mustChangePassword) {
+    return <ForcedPasswordChange onDone={() => setUser({ ...currentUser, mustChangePassword: false })} />;
+  }
+
   const today = dateKey(new Date());
-  const monthEvents = db.events.filter((event) => monthKey(event.date) === month);
   const upcomingEvents = [...db.events].filter((event) => event.date >= today).sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
   const birthdayCount = db.people.filter((person) => person.birthday && person.birthday.slice(5, 7) === month.slice(5, 7)).length;
   const memberCount = db.people.filter((person) => person.stage === "membro").length;
   const lowAssetCount = db.assets.filter((asset) => asset.status === "manutencao").length;
   const monthVisitors = db.people.filter((person) => monthKey(person.firstVisit) === month).length;
+  const goalPercent = Math.round((totals.income / Math.max(db.settings.monthlyGoal, 1)) * 100);
+  const attendanceEvent = attendanceEventId ? db.events.find((event) => event.id === attendanceEventId) ?? null : null;
 
   return (
     <div className="app-shell">
@@ -596,13 +714,13 @@ export default function ChurchApp() {
           <span className="brand-copy"><strong>VDC <i>comunidade</i></strong><small>GESTÃO DA IGREJA</small></span>
         </button>
         <div className="church-switch">
-          <span className="church-avatar">V</span>
+          <span className="church-avatar">{initials(db.settings.churchName)[0] ?? "V"}</span>
           <span><strong>{db.settings.churchName}</strong><small>{db.settings.location}</small></span>
           <ChevronDown size={15} />
         </div>
         <p className="nav-heading">COMUNIDADE</p>
         <nav className="side-nav" aria-label="Navegação principal">
-          {pages.map(({ id, label, icon: Icon }) => (
+          {visiblePages.map(({ id, label, icon: Icon }) => (
             <button key={id} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => { setPage(id); setSearch(""); }}>
               <Icon size={18} strokeWidth={1.8} /><span>{label}</span>
               {id === "pessoas" && attention.length > 0 && <span className="nav-count">{attention.length}</span>}
@@ -616,22 +734,22 @@ export default function ChurchApp() {
           <p>Um primeiro passo para organizar e fortalecer nossa igreja.</p>
           <button onClick={() => setPage("pessoas")}>Acompanhar pessoas <ArrowRight size={13} /></button>
         </div>
-        <div className="sidebar-profile"><span className="avatar">EM</span><span><strong>Elisa Martins</strong><small>Administração</small></span><button aria-label="Menu do perfil"><Menu size={17} /></button></div>
+        <div className="sidebar-profile"><span className="avatar">{initials(currentUser.name)}</span><span><strong>{currentUser.name}</strong><small>{ROLE_LABELS[role]}</small></span></div>
       </aside>
 
       <main className="main-shell">
         <header className="topbar">
           <div className="breadcrumbs"><span>{db.settings.churchName}</span><b>/</b><strong>{activePage.label}</strong></div>
-          <div className="topbar-right"><span className="saved-status"><i /> Dados neste dispositivo</span><button className="icon-button notice-button" aria-label={`${attention.length} lembretes`} onClick={() => setPage("painel")}><Bell size={18} />{attention.length > 0 && <i />}</button><span className="avatar top-avatar">EM</span></div>
+          <div className="topbar-right"><span className="saved-status"><i /> Dados na nuvem</span><button className="icon-button notice-button" aria-label={`${attention.length} lembretes`} onClick={() => setPage("painel")}><Bell size={18} />{attention.length > 0 && <i />}</button><span className="avatar top-avatar">{initials(currentUser.name)}</span></div>
         </header>
 
         <div className="content">
-          {storageError && <div className="storage-message"><span>{storageError}</span>{!storageReady && <button onClick={resetDemo}>Iniciar demonstração</button>}<button className="dismiss-message" onClick={() => setStorageError("")} aria-label="Fechar"><X size={15} /></button></div>}
+          {storageError && <div className="storage-message"><span>{storageError}</span><button className="dismiss-message" onClick={() => setStorageError("")} aria-label="Fechar"><X size={15} /></button></div>}
 
           {page === "painel" && (
             <>
               <section className="welcome-row">
-                <PageHeading eyebrow={`${new Intl.DateTimeFormat("pt-BR", { weekday: "long" }).format(new Date())} · ${new Intl.DateTimeFormat("pt-BR", { day: "numeric", month: "long" }).format(new Date())}`} title="Paz, Elisa ✨" description="Um resumo da vida e do cuidado com a nossa comunidade." />
+                <PageHeading eyebrow={`${new Intl.DateTimeFormat("pt-BR", { weekday: "long" }).format(new Date())} · ${new Intl.DateTimeFormat("pt-BR", { day: "numeric", month: "long" }).format(new Date())}`} title={`Paz, ${currentUser.name.split(" ")[0]} ✨`} description="Um resumo da vida e do cuidado com a nossa comunidade." />
                 <div className="month-picker"><button onClick={() => setMonth((value) => shiftMonth(value, -1))} aria-label="Mês anterior"><ChevronLeft size={16} /></button><span>{formatMonthLabel(month)}</span><button onClick={() => setMonth((value) => shiftMonth(value, 1))} aria-label="Próximo mês"><ChevronRight size={16} /></button></div>
               </section>
               <section className="metrics-grid">
@@ -645,13 +763,24 @@ export default function ChurchApp() {
                   <PanelHeading title="Cuidado com os recursos" subtitle={`Resumo de ${formatMonthLabel(month)}`} action={<button className="text-button" onClick={() => setPage("financeiro")}>Ver financeiro <ArrowRight size={14} /></button>} />
                   <div className="finance-overview">
                     <div className="balance-block"><span>Resultado do mês</span><strong className={totals.income - totals.expenses >= 0 ? "amount-positive" : "amount-negative"}>{formatCurrency(totals.income - totals.expenses)}</strong><small>Entradas menos saídas registradas</small></div>
-                    <div className="goal-block"><div className="goal-copy"><span>Entradas · meta mensal</span><strong>{Math.min(100, Math.round((totals.income / Math.max(db.settings.monthlyGoal, 1)) * 100))}%</strong></div><div className="goal-track"><span style={{ width: `${Math.min(100, (totals.income / Math.max(db.settings.monthlyGoal, 1)) * 100)}%` }} /></div><small>{formatCurrency(totals.income)} de {formatCurrency(db.settings.monthlyGoal)}</small></div>
+                    <div className="goal-block"><div className="goal-copy"><span>Entradas · meta mensal</span><strong>{goalPercent}%{goalPercent > 100 ? " 🎉" : ""}</strong></div><div className="goal-track"><span style={{ width: `${Math.min(100, goalPercent)}%` }} /></div><small>{formatCurrency(totals.income)} de {formatCurrency(db.settings.monthlyGoal)}{goalPercent > 100 ? " — meta superada" : ""}</small></div>
                   </div>
                   <div className="finance-legend"><span><i className="legend-income" /> Entradas <b>{formatCurrency(totals.income)}</b></span><span><i className="legend-expense" /> Saídas <b>{formatCurrency(totals.expenses)}</b></span></div>
                 </article>
                 <article className="panel attention-panel">
                   <PanelHeading title="Cuidado pastoral" subtitle="Pessoas que podem precisar de um contato" action={attention.length > 0 ? <Badge tone="warm">{attention.length}</Badge> : undefined} />
-                  {attention.length ? <div className="attention-list">{attention.slice(0, 4).map(({ person, reason }) => <button className="attention-row" key={person.id} onClick={() => { setPage("pessoas"); setSearch(person.name); }}><span className={`avatar avatar-${avatarColor(person.name)}`}>{initials(person.name)}</span><span className="attention-copy"><strong>{person.name}</strong><small>{reason}</small></span><ArrowRight size={15} /></button>)}</div> : <div className="all-clear"><Heart size={18} /><strong>Todos acompanhados</strong><span>Não há pessoas sinalizadas agora.</span></div>}
+                  {attention.length ? <div className="attention-list">{attention.slice(0, 4).map(({ person, reason }) => {
+                    const link = whatsappLink(person.phone);
+                    return (
+                      <div className="attention-row" key={person.id}>
+                        <button style={{ border: "none", padding: 0, flex: 1, display: "flex", alignItems: "center", gap: 10, background: "none", textAlign: "left" }} onClick={() => { setPage("pessoas"); setSearch(person.name); }}>
+                          <span className={`avatar avatar-${avatarColor(person.name)}`}>{initials(person.name)}</span>
+                          <span className="attention-copy"><strong>{person.name}</strong><small>{reason}</small></span>
+                        </button>
+                        {link && <a href={link} target="_blank" rel="noreferrer" className="icon-button" aria-label={`Chamar ${person.name} no WhatsApp`}><MessageCircle size={15} /></a>}
+                      </div>
+                    );
+                  })}</div> : <div className="all-clear"><Heart size={18} /><strong>Todos acompanhados</strong><span>Não há pessoas sinalizadas agora.</span></div>}
                 </article>
                 <article className="panel events-panel">
                   <PanelHeading title="Na vida da igreja" subtitle="Próximos encontros e atividades" action={<button className="text-button" onClick={() => setPage("agenda")}>Abrir agenda <ArrowRight size={14} /></button>} />
@@ -669,7 +798,7 @@ export default function ChurchApp() {
 
           {page === "financeiro" && (
             <>
-              <PageHeading eyebrow="ADMINISTRAÇÃO" title="Financeiro" description="Dízimos, ofertas, despesas e transparência com os recursos." action={<button className="button button-primary" onClick={() => setModal("transaction")}><Plus size={16} /> Novo lançamento</button>} />
+              <PageHeading eyebrow="ADMINISTRAÇÃO" title="Financeiro" description="Dízimos, ofertas, despesas e transparência com os recursos." action={canWriteFinance ? <button className="button button-primary" onClick={() => setModal("transaction")}><Plus size={16} /> Novo lançamento</button> : undefined} />
               <section className="metrics-grid finance-metrics">
                 <Metric label="Entradas" value={formatCurrency(totals.income)} note={formatMonthLabel(month)} icon={ArrowDownLeft} tone="tone-green" />
                 <Metric label="Saídas" value={formatCurrency(totals.expenses)} note={`${monthEntries.filter((entry) => entry.type === "saida").length} despesas registradas`} icon={ArrowUpRight} tone="tone-peach" />
@@ -682,10 +811,10 @@ export default function ChurchApp() {
                   <div className="finance-actions"><div className="month-picker month-picker-small"><button onClick={() => setMonth((value) => shiftMonth(value, -1))} aria-label="Mês anterior"><ChevronLeft size={15} /></button><span>{formatMonthLabel(month)}</span><button onClick={() => setMonth((value) => shiftMonth(value, 1))} aria-label="Próximo mês"><ChevronRight size={15} /></button></div>{financeTab === "lancamentos" && <button className="icon-button" onClick={exportTransactions} aria-label="Exportar prestação de contas CSV"><Download size={16} /></button>}</div>
                 </div>
                 {financeTab === "lancamentos" && <><div className="list-toolbar"><div className="segmented-control segmented-small"><button className={transactionType === "todas" ? "selected" : ""} onClick={() => setTransactionType("todas")}>Todos</button><button className={transactionType === "entrada" ? "selected income-choice" : ""} onClick={() => setTransactionType("entrada")}>Entradas</button><button className={transactionType === "saida" ? "selected expense-choice" : ""} onClick={() => setTransactionType("saida")}>Saídas</button></div><span className="result-count">{monthEntries.filter((entry) => transactionType === "todas" || entry.type === transactionType).length} lançamentos</span></div><TransactionTable transactions={monthEntries.filter((entry) => transactionType === "todas" || entry.type === transactionType)} /></>}
-                {financeTab === "orcamento" && <BudgetView db={db} month={month} transactions={monthEntries} />}
-                {financeTab === "compromissos" && <CommitmentView db={db} onPay={payInstallment} />}
+                {financeTab === "orcamento" && <BudgetView month={month} canEdit={canWriteFinance} />}
+                {financeTab === "compromissos" && <CommitmentView db={db} onPay={payInstallment} canEdit={canWriteFinance} />}
               </section>
-              <div className="finance-note"><span>ⓘ</span><p>Este protótipo salva os lançamentos apenas neste dispositivo. Para prestação oficial de contas, confira os registros com a tesouraria da igreja.</p></div>
+              <div className="finance-note"><span>ⓘ</span><p>Os dados ficam salvos na nuvem e são compartilhados por toda a equipe com acesso ao sistema.</p></div>
             </>
           )}
 
@@ -707,7 +836,17 @@ export default function ChurchApp() {
             </>
           )}
 
-          {page === "agenda" && <AgendaView events={db.events} month={month} selectedDate={selectedDate} onMonth={setMonth} onSelectDate={setSelectedDate} onAdd={() => setModal("event")} />}
+          {page === "agenda" && (
+            <AgendaView
+              events={db.events}
+              month={month}
+              selectedDate={selectedDate}
+              onMonth={setMonth}
+              onSelectDate={setSelectedDate}
+              onAdd={() => setModal("event")}
+              onMarkAttendance={(eventId) => { setAttendanceEventId(eventId); setModal("attendance"); }}
+            />
+          )}
 
           {page === "pessoas" && (
             <>
@@ -729,15 +868,73 @@ export default function ChurchApp() {
             </>
           )}
 
-          <footer className="app-footer"><span>© {new Date().getFullYear()} {db.settings.churchName}</span><span><i /> Salvo neste dispositivo</span><span>Feito para cuidar da comunidade</span></footer>
+          {page === "celulas" && <CellsView people={db.people} canEdit={role !== "membro"} onPersonCellChange={assignPersonCell} />}
+
+          {page === "configuracoes" && (
+            <SettingsView
+              settings={db.settings}
+              currentUserId={currentUser.id}
+              onSaveSettings={updateChurchSettings}
+              onLogout={handleLogout}
+            />
+          )}
+
+          <footer className="app-footer"><span>© {new Date().getFullYear()} {db.settings.churchName}</span><span><i /> Salvo na nuvem</span><span>Feito para cuidar da comunidade</span></footer>
         </div>
       </main>
-      <nav className="mobile-nav" aria-label="Navegação móvel">{pages.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? "active" : ""} onClick={() => { setPage(id); setSearch(""); }}><Icon size={18} /><span>{label}</span></button>)}</nav>
+      <nav className="mobile-nav" aria-label="Navegação móvel">{visiblePages.slice(0, 5).map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? "active" : ""} onClick={() => { setPage(id); setSearch(""); }}><Icon size={18} /><span>{label}</span></button>)}</nav>
       {modal === "transaction" && <TransactionForm onClose={closeModal} onSave={addTransaction} />}
       {modal === "asset" && <AssetForm onClose={closeModal} onSave={addAsset} />}
       {modal === "event" && <EventForm initialDate={selectedDate} onClose={closeModal} onSave={addEvent} />}
       {modal === "person" && <PersonForm onClose={closeModal} onSave={addPerson} />}
+      {modal === "attendance" && attendanceEvent && <AttendanceForm event={attendanceEvent} people={db.people} onClose={closeModal} onSave={saveAttendance} />}
     </div>
+  );
+}
+
+function ForcedPasswordChange({ onDone }: { onDone: () => void }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  return (
+    <main className="login-screen">
+      <section className="login-card">
+        <span className="login-mark"><Lock size={22} /></span>
+        <h1>Defina sua senha</h1>
+        <p>Por segurança, troque a senha provisória antes de continuar.</p>
+        <form className="login-form" onSubmit={async (event) => {
+          event.preventDefault();
+          setError("");
+          if (newPassword.length < 8) {
+            setError("A nova senha precisa ter pelo menos 8 caracteres.");
+            return;
+          }
+          setLoading(true);
+          try {
+            const response = await fetch("/api/auth/change-password", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ currentPassword, newPassword }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              setError(data.error || "Não foi possível trocar a senha.");
+              return;
+            }
+            onDone();
+          } finally {
+            setLoading(false);
+          }
+        }}>
+          <label className="login-field"><span>Senha provisória</span><input type="password" autoFocus value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>
+          <label className="login-field"><span>Nova senha</span><input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} minLength={8} required /></label>
+          {error && <p className="form-error">{error}</p>}
+          <button className="button button-primary login-submit" type="submit" disabled={loading}>{loading ? "Salvando…" : "Salvar nova senha"}</button>
+        </form>
+      </section>
+    </main>
   );
 }
 
@@ -746,33 +943,17 @@ function TransactionTable({ transactions }: { transactions: FinancialTransaction
   return <div className="table-wrap"><table><thead><tr><th>LANÇAMENTO</th><th>CATEGORIA</th><th>DATA</th><th>FORMA</th><th className="align-right">VALOR</th></tr></thead><tbody>{transactions.map((item) => <tr key={item.id}><td><div className="transaction-title"><span className={item.type === "entrada" ? "transaction-in" : "transaction-out"}>{item.type === "entrada" ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span><strong>{item.description}</strong><small>{item.type === "entrada" ? "Entrada" : "Saída"}</small></span></div></td><td>{item.category}</td><td>{formatDate(item.date)}</td><td>{item.method}</td><td className={`align-right transaction-amount ${item.type === "entrada" ? "amount-positive" : "amount-negative"}`}>{item.type === "entrada" ? "+" : "−"} {formatCurrency(item.amount)}</td></tr>)}</tbody></table></div>;
 }
 
-function BudgetView({
-  db,
-  month,
-  transactions,
-}: {
-  db: ChurchDatabase;
-  month: string;
-  transactions: FinancialTransaction[];
-}) {
-  const spentByCategory = new Map<string, number>();
-  for (const transaction of transactions) {
-    if (transaction.type === "saida") spentByCategory.set(transaction.category, (spentByCategory.get(transaction.category) ?? 0) + transaction.amount);
-  }
-  const totalSpent = [...spentByCategory.values()].reduce((sum, value) => sum + value, 0);
-  const totalBudget = categoryBudgets.reduce((sum, category) => sum + category.budget, 0);
-  return <div className="budget-view"><div className="budget-summary"><div><span>Orçamento planejado</span><strong>{formatCurrency(totalBudget)}</strong></div><div><span>Despesas registradas · {formatMonthLabel(month)}</span><strong>{formatCurrency(totalSpent)}</strong></div><div className="budget-remaining"><span>Saldo do orçamento</span><strong>{formatCurrency(totalBudget - totalSpent)}</strong></div></div><div className="budget-list">{categoryBudgets.map((category) => { const spent = spentByCategory.get(category.name) ?? 0; const percent = Math.min(100, Math.round(spent / category.budget * 100)); return <div className="budget-row" key={category.name}><div className="budget-label"><span className={`budget-dot ${category.color}`} /><strong>{category.name}</strong><span>{formatCurrency(spent)} <i>de</i> {formatCurrency(category.budget)}</span></div><div className="budget-track"><span className={category.color} style={{ width: `${percent}%` }} /></div><small>{percent}% utilizado</small></div>; })}</div><p className="budget-disclaimer">O orçamento é uma referência inicial para o protótipo. Ajustes detalhados poderão ser feitos pela tesouraria.</p><span className="sr-only">{db.settings.churchName}</span></div>;
-}
-
 function CommitmentView({
   db,
   onPay,
+  canEdit,
 }: {
   db: ChurchDatabase;
   onPay: (id: string) => void;
+  canEdit: boolean;
 }) {
   const open = db.commitments.filter((item) => item.paidInstallments < item.installments);
-  return <div className="commitments-list">{open.map((item) => { const installment = item.totalAmount / item.installments; const overdue = item.nextDueDate < dateKey(new Date()); const progress = Math.round(item.paidInstallments / item.installments * 100); return <article className="commitment-card" key={item.id}><div className="commitment-top"><span className="commitment-icon"><ClipboardList size={17} /></span><Badge tone={overdue ? "warm" : "green"}>{overdue ? "Parcela vencida" : "Em andamento"}</Badge></div><h3>{item.name}</h3><p>{item.category} · {item.paidInstallments} de {item.installments} parcelas pagas</p><div className="commitment-progress"><span style={{ width: `${progress}%` }} /></div><div className="commitment-detail"><span>Próxima parcela <b>{formatCurrency(installment)}</b></span><span>{overdue ? "Venceu" : "Vencimento"} em {formatDate(item.nextDueDate)}</span></div><button className="button button-secondary" onClick={() => onPay(item.id)}><Check size={14} /> Registrar parcela paga</button></article>; })}{!open.length && <div className="empty-state"><span><Check size={19} /></span><strong>Sem compromissos em aberto</strong><p>Todos os parcelamentos foram quitados.</p></div>}</div>;
+  return <div className="commitments-list">{open.map((item) => { const installment = item.totalAmount / item.installments; const overdue = item.nextDueDate < dateKey(new Date()); const progress = Math.round(item.paidInstallments / item.installments * 100); return <article className="commitment-card" key={item.id}><div className="commitment-top"><span className="commitment-icon"><ClipboardList size={17} /></span><Badge tone={overdue ? "warm" : "green"}>{overdue ? "Parcela vencida" : "Em andamento"}</Badge></div><h3>{item.name}</h3><p>{item.category} · {item.paidInstallments} de {item.installments} parcelas pagas</p><div className="commitment-progress"><span style={{ width: `${progress}%` }} /></div><div className="commitment-detail"><span>Próxima parcela <b>{formatCurrency(installment)}</b></span><span>{overdue ? "Venceu" : "Vencimento"} em {formatDate(item.nextDueDate)}</span></div>{canEdit && <button className="button button-secondary" onClick={() => onPay(item.id)}><Check size={14} /> Registrar parcela paga</button>}</article>; })}{!open.length && <div className="empty-state"><span><Check size={19} /></span><strong>Sem compromissos em aberto</strong><p>Todos os parcelamentos foram quitados.</p></div>}</div>;
 }
 
 function AgendaView({
@@ -782,6 +963,7 @@ function AgendaView({
   onMonth,
   onSelectDate,
   onAdd,
+  onMarkAttendance,
 }: {
   events: ChurchEvent[];
   month: string;
@@ -789,6 +971,7 @@ function AgendaView({
   onMonth: (month: string) => void;
   onSelectDate: (date: string) => void;
   onAdd: () => void;
+  onMarkAttendance: (eventId: string) => void;
 }) {
   const [year, monthNumber] = month.split("-").map(Number);
   const firstDay = new Date(year, monthNumber - 1, 1);
@@ -810,7 +993,7 @@ function AgendaView({
           <div className="calendar-grid">{weekdays.map((day) => <div className="weekday" key={day}>{day}</div>)}{days.map((day) => { const key = dateKey(day); const dayEvents = events.filter((event) => event.date === key); const inMonth = day.getMonth() === monthNumber - 1; return <button key={key} className={`calendar-day ${inMonth ? "" : "outside"} ${key === selectedDate ? "selected" : ""} ${key === dateKey(new Date()) ? "today" : ""}`} onClick={() => onSelectDate(key)}><span className="day-number">{day.getDate()}</span><span className="day-events">{dayEvents.slice(0, 2).map((event) => <i className={`event-pill event-${event.type}`} key={event.id}>{event.title}</i>)}{dayEvents.length > 2 && <small>+{dayEvents.length - 2} eventos</small>}</span><span className="mobile-event-dots">{dayEvents.slice(0, 3).map((event) => <i className={`event-dot event-${event.type}`} key={event.id} />)}</span></button>; })}</div>
         </article>
         <aside className="agenda-aside">
-          <article className="panel selected-day-panel"><PanelHeading title={new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long" }).format(toLocalDate(selectedDate))} subtitle={selectedEvents.length ? `${selectedEvents.length} encontro${selectedEvents.length > 1 ? "s" : ""} neste dia` : "Um bom dia para criar um encontro"} />{selectedEvents.length ? <div className="selected-events">{selectedEvents.map((event) => <EventCard key={event.id} event={event} />)}</div> : <div className="empty-state compact-empty"><span><CalendarDays size={18} /></span><strong>Dia livre</strong><p>Use este tempo para planejar um novo encontro.</p><button className="text-button" onClick={onAdd}><Plus size={14} /> Adicionar evento</button></div>}</article>
+          <article className="panel selected-day-panel"><PanelHeading title={new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long" }).format(toLocalDate(selectedDate))} subtitle={selectedEvents.length ? `${selectedEvents.length} encontro${selectedEvents.length > 1 ? "s" : ""} neste dia` : "Um bom dia para criar um encontro"} />{selectedEvents.length ? <div className="selected-events">{selectedEvents.map((event) => <EventCard key={event.id} event={event} onMarkAttendance={onMarkAttendance} />)}</div> : <div className="empty-state compact-empty"><span><CalendarDays size={18} /></span><strong>Dia livre</strong><p>Use este tempo para planejar um novo encontro.</p><button className="text-button" onClick={onAdd}><Plus size={14} /> Adicionar evento</button></div>}</article>
           <article className="panel next-events-panel"><PanelHeading title="Em breve" subtitle="Próximos encontros da igreja" />{upcoming.length ? <div className="upcoming-list">{upcoming.map((event) => <EventCard key={event.id} event={event} compact />)}</div> : <p className="empty-copy">Nenhum evento futuro.</p>}</article>
         </aside>
       </section>
@@ -818,6 +1001,23 @@ function AgendaView({
   );
 }
 
-function EventCard({ event, compact = false }: { event: ChurchEvent; compact?: boolean }) {
-  return <div className={`event-card ${compact ? "event-card-compact" : ""}`}><span className={`event-card-mark event-${event.type}`} /><div className="event-card-copy"><Badge tone={event.type}>{eventLabels[event.type]}</Badge><strong>{event.title}</strong><small><Clock3 size={12} /> {formatDate(event.date)} · {event.time}</small><small><MapPin size={12} /> {event.location}</small>{!compact && <small className="event-leader">Responsável: {event.leader}</small>}</div></div>;
+function EventCard({ event, compact = false, onMarkAttendance }: { event: ChurchEvent; compact?: boolean; onMarkAttendance?: (eventId: string) => void }) {
+  const isPastOrToday = event.date <= dateKey(new Date());
+  return (
+    <div className={`event-card ${compact ? "event-card-compact" : ""}`}>
+      <span className={`event-card-mark event-${event.type}`} />
+      <div className="event-card-copy">
+        <Badge tone={event.type}>{eventLabels[event.type]}</Badge>
+        <strong>{event.title}</strong>
+        <small><Clock3 size={12} /> {formatDate(event.date)} · {event.time}</small>
+        <small><MapPin size={12} /> {event.location}</small>
+        {!compact && <small className="event-leader">Responsável: {event.leader}</small>}
+        {!compact && isPastOrToday && onMarkAttendance && (
+          <button className="text-button" type="button" onClick={() => onMarkAttendance(event.id)}>
+            <CalendarCheck size={13} /> {event.attendanceIds.length > 0 ? `${event.attendanceIds.length} presentes` : "Marcar presença"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }

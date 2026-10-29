@@ -370,6 +370,22 @@ tbody tr:hover { background: #fcfdfb; }
   .agenda-aside { grid-template-columns: 1fr; }
   .storage-message { align-items: flex-start; flex-wrap: wrap; }.storage-message > span { flex-basis: calc(100% - 35px); }.storage-message button:not(.dismiss-message) { margin-left: auto; }
 }
+.budget-dot.warm { background: #c77b5c; }
+.budget-track span.warm { background: #c77b5c; }
+.budget-planned-input { width: 72px; min-height: auto; padding: 2px 6px; border: 1px solid #e3eae4; border-radius: 5px; font-size: 8px; }
+.cells-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 4px; }
+.login-screen { display: grid; min-height: 100vh; place-items: center; padding: 20px; background: var(--canvas); }
+.login-card { width: min(100%, 380px); padding: 30px 26px; border: 1px solid #e8ede8; border-radius: 14px; background: #fff; box-shadow: 0 20px 60px rgba(23, 48, 33, .1); text-align: center; }
+.login-mark { display: grid; width: 48px; height: 48px; margin: 0 auto 14px; place-items: center; border-radius: 14px; color: white; background: #396e50; }
+.login-card h1 { font-size: 21px; }
+.login-card > p { margin: 9px 0 20px; color: #87938b; font-size: 10px; line-height: 1.5; }
+.login-form { display: grid; gap: 12px; text-align: left; }
+.login-field { display: grid; gap: 5px; }
+.login-field > span { display: flex; align-items: center; gap: 5px; color: #68766d; font-size: 8px; font-weight: 600; }
+.login-field > input { width: 100%; min-height: 38px; padding: 9px 11px; border: 1px solid #e3eae4; border-radius: 7px; outline: 0; color: #46574b; background: #fff; font-size: 10px; }
+.login-field > input:focus { border-color: #9dc6a5; }
+.login-submit { width: 100%; margin-top: 4px; }
+.login-hint { margin: 16px 0 0; color: #9aa49c; font-size: 8px; }
 @media (max-width: 390px) {
   .content { padding-right: 10px; padding-left: 10px; }.month-picker > span { min-width: 90px; }
   .finance-overview { grid-template-columns: 1fr; }.page-heading > .button { gap: 5px; padding: 0 7px; font-size: 7px; }

@@ -1,14 +1,16 @@
 import { Prisma } from "@/generated/prisma/client";
 import { NextResponse } from "next/server";
-import { createSeedDatabase } from "@/lib/seed";
 import { prisma } from "@/lib/prisma";
 import { churchSnapshotSchema } from "@/lib/church-validation";
+import { CHURCH_ID } from "@/lib/church";
+import { ensureChurch } from "@/lib/ensure-church";
+import { getCurrentUser } from "@/lib/auth/dal";
+import { isRole } from "@/lib/auth/roles";
 import type { ChurchDatabase } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const CHURCH_ID = "vdc-main";
 const MAX_BODY_BYTES = 2_000_000;
 
 type ChurchRecord = Prisma.ChurchGetPayload<{
@@ -20,58 +22,6 @@ type ChurchRecord = Prisma.ChurchGetPayload<{
     commitments: true;
   };
 }>;
-
-async function initializeChurch(): Promise<void> {
-  const existing = await prisma.church.findUnique({ where: { id: CHURCH_ID }, select: { id: true } });
-  if (existing) return;
-
-  const seed = createSeedDatabase();
-  try {
-    await prisma.$transaction(async (tx) => {
-      await tx.church.create({
-        data: {
-          id: CHURCH_ID,
-          name: seed.settings.churchName,
-          location: seed.settings.location,
-          monthlyGoal: seed.settings.monthlyGoal,
-          openingBalance: seed.settings.openingBalance,
-          transactions: {
-            createMany: {
-              data: seed.transactions.map((item) => ({ ...item })),
-            },
-          },
-          assets: {
-            createMany: {
-              data: seed.assets.map((item) => ({ ...item })),
-            },
-          },
-          events: {
-            createMany: {
-              data: seed.events.map((item) => ({ ...item })),
-            },
-          },
-          people: {
-            createMany: {
-              data: seed.people.map((item) => ({ ...item })),
-            },
-          },
-          commitments: {
-            createMany: {
-              data: seed.commitments.map((item) => ({ ...item })),
-            },
-          },
-        },
-      });
-    });
-  } catch (error) {
-    if (
-      !(error instanceof Prisma.PrismaClientKnownRequestError) ||
-      error.code !== "P2002"
-    ) {
-      throw error;
-    }
-  }
-}
 
 function nextCode(records: Array<{ code: string }>): number {
   return records.reduce((next, record) => {
@@ -102,10 +52,10 @@ function toChurchDatabase(church: ChurchRecord): ChurchDatabase {
       id, title, type: type as ChurchDatabase["events"][number]["type"],
       date, time, location, leader, attendanceIds, visitors,
     })),
-    people: church.people.map(({ id, name, phone, email, birthday, stage, group, firstVisit, notes, contactDates }) => ({
+    people: church.people.map(({ id, name, phone, email, birthday, stage, group, firstVisit, notes, contactDates, cellId }) => ({
       id, name, phone, email, birthday,
       stage: stage as ChurchDatabase["people"][number]["stage"],
-      group, firstVisit, notes, contactDates,
+      group, firstVisit, notes, contactDates, cellId,
     })),
     commitments: church.commitments.map(({ id, name, category, totalAmount, installments, paidInstallments, nextDueDate }) => ({
       id, name, category, totalAmount, installments, paidInstallments, nextDueDate,
@@ -120,7 +70,7 @@ function toChurchDatabase(church: ChurchRecord): ChurchDatabase {
 }
 
 async function readChurch() {
-  await initializeChurch();
+  await ensureChurch();
   const church = await prisma.church.findUnique({
     where: { id: CHURCH_ID },
     include: {
@@ -136,6 +86,10 @@ async function readChurch() {
 }
 
 export async function GET() {
+  const current = await getCurrentUser();
+  if (!current || !isRole(current.role)) {
+    return NextResponse.json({ error: "Não autenticado." }, { status: 401 });
+  }
   try {
     const church = await readChurch();
     return NextResponse.json(
@@ -152,6 +106,14 @@ export async function GET() {
 }
 
 export async function PUT(request: Request) {
+  const current = await getCurrentUser();
+  if (!current || !isRole(current.role)) {
+    return NextResponse.json({ error: "Não autenticado." }, { status: 401 });
+  }
+  if (current.role === "membro") {
+    return NextResponse.json({ error: "Seu perfil não pode alterar estes dados." }, { status: 403 });
+  }
+
   const contentLength = Number(request.headers.get("content-length") ?? 0);
   if (contentLength > MAX_BODY_BYTES) {
     return NextResponse.json({ error: "O envio excede o limite permitido." }, { status: 413 });
@@ -214,7 +176,9 @@ export async function PUT(request: Request) {
         await tx.churchEvent.createMany({ data: data.events.map((item) => ({ ...item, churchId: CHURCH_ID })) });
       }
       if (data.people.length) {
-        await tx.churchPerson.createMany({ data: data.people.map((item) => ({ ...item, churchId: CHURCH_ID })) });
+        await tx.churchPerson.createMany({
+          data: data.people.map((item) => ({ ...item, cellId: item.cellId ?? null, churchId: CHURCH_ID })),
+        });
       }
       if (data.commitments.length) {
         await tx.churchCommitment.createMany({ data: data.commitments.map((item) => ({ ...item, churchId: CHURCH_ID })) });

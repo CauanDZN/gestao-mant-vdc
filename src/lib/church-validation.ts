@@ -55,6 +55,7 @@ export const churchDatabaseSchema = z.object({
     firstVisit: date,
     notes: z.string().max(2000),
     contactDates: z.array(date).max(1000),
+    cellId: z.string().min(1).max(120).nullable().optional(),
   }).strict()).max(10000),
   commitments: z.array(z.object({
     id,
