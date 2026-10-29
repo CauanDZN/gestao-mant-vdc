@@ -10,6 +10,8 @@ const PUBLIC_PATHS = [
   "/manifest.json",
   "/sw.js",
   "/apple-touch-icon.png",
+  "/api/pix/webhook/mercadopago",
+  "/api/pix/webhook/asaas",
 ];
 
 function isPublic(pathname: string): boolean {

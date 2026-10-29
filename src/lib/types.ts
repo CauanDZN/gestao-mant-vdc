@@ -36,6 +36,7 @@ export interface ChurchEvent {
   leader: string;
   attendanceIds: string[];
   visitors: number;
+  price?: number;
 }
 
 export type PersonStage = "visita" | "contatado" | "frequentador" | "membro";

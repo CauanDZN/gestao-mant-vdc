@@ -5,6 +5,7 @@ import {
   ArrowRight,
   ArrowUpRight,
   Bell,
+  BookOpen,
   CalendarCheck,
   CalendarDays,
   Check,
@@ -25,6 +26,7 @@ import {
   Plus,
   Search,
   Settings as SettingsIcon,
+  Ticket,
   UsersRound,
   Users,
   Wallet,
@@ -47,6 +49,8 @@ import { downloadFile, toCsv, uid } from "@/lib/utils";
 import { useCurrentUser } from "@/lib/use-current-user";
 import { canAccessFinance, canAccessSettings, canEditFinance, ROLE_LABELS, type Role } from "@/lib/auth/roles";
 import { CellsView } from "@/components/cells-view";
+import { CoursesView } from "@/components/courses-view";
+import { EventRegistrationsModal } from "@/components/event-registrations-modal";
 import { BudgetView } from "@/components/budget-view";
 import { SettingsView } from "@/components/settings-view";
 import type {
@@ -67,6 +71,7 @@ const pages = [
   { id: "agenda", label: "Agenda", icon: CalendarDays },
   { id: "pessoas", label: "Pessoas", icon: Users },
   { id: "celulas", label: "Células", icon: UsersRound },
+  { id: "cursos", label: "Cursos", icon: BookOpen },
   { id: "configuracoes", label: "Configurações", icon: SettingsIcon },
 ] as const;
 
@@ -353,6 +358,7 @@ function EventForm({
   const [time, setTime] = useState("19:00");
   const [location, setLocation] = useState("");
   const [leader, setLeader] = useState("");
+  const [price, setPrice] = useState("");
   const [error, setError] = useState("");
   return (
     <ModalFrame title="Novo evento" subtitle="Adicione um culto ou atividade à agenda." icon={CalendarDays} onClose={onClose}>
@@ -362,7 +368,7 @@ function EventForm({
           setError("Preencha o nome, a data e o local do evento.");
           return;
         }
-        onSave({ title: title.trim(), type, date, time, location: location.trim(), leader: leader.trim() || "A definir" });
+        onSave({ title: title.trim(), type, date, time, location: location.trim(), leader: leader.trim() || "A definir", price: Number(price.replace(",", ".")) || 0 });
       }}>
         <Field label="Nome do evento"><input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Ex.: Culto de celebração" /></Field>
         <div className="form-grid">
@@ -370,7 +376,8 @@ function EventForm({
           <Field label="Data"><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></Field>
           <Field label="Horário"><input type="time" value={time} onChange={(event) => setTime(event.target.value)} /></Field>
           <Field label="Local"><input value={location} onChange={(event) => setLocation(event.target.value)} placeholder="Ex.: Templo" /></Field>
-          <Field label="Responsável" full><input value={leader} onChange={(event) => setLeader(event.target.value)} placeholder="Nome do líder ou responsável" /></Field>
+          <Field label="Responsável"><input value={leader} onChange={(event) => setLeader(event.target.value)} placeholder="Nome do líder ou responsável" /></Field>
+          <Field label="Valor da inscrição (R$, opcional)"><input inputMode="decimal" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="0,00" /></Field>
         </div>
         {error && <p className="form-error">{error}</p>}
         <div className="modal-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancelar</button><button className="button button-primary">Adicionar à agenda <ArrowRight size={15} /></button></div>
@@ -487,6 +494,7 @@ export default function ChurchApp() {
   const [selectedDate, setSelectedDate] = useState(dateKey(new Date()));
   const [selectedStage, setSelectedStage] = useState<"todos" | PersonStage>("todos");
   const [attendanceEventId, setAttendanceEventId] = useState<string | null>(null);
+  const [registrationsEventId, setRegistrationsEventId] = useState<string | null>(null);
   const skipNextSave = useRef(true);
 
   useEffect(() => {
@@ -845,8 +853,11 @@ export default function ChurchApp() {
               onSelectDate={setSelectedDate}
               onAdd={() => setModal("event")}
               onMarkAttendance={(eventId) => { setAttendanceEventId(eventId); setModal("attendance"); }}
+              onManageRegistrations={(eventId) => setRegistrationsEventId(eventId)}
             />
           )}
+
+          {page === "cursos" && <CoursesView people={db.people} canEdit={role !== "membro"} />}
 
           {page === "pessoas" && (
             <>
@@ -888,6 +899,17 @@ export default function ChurchApp() {
       {modal === "event" && <EventForm initialDate={selectedDate} onClose={closeModal} onSave={addEvent} />}
       {modal === "person" && <PersonForm onClose={closeModal} onSave={addPerson} />}
       {modal === "attendance" && attendanceEvent && <AttendanceForm event={attendanceEvent} people={db.people} onClose={closeModal} onSave={saveAttendance} />}
+      {registrationsEventId && (() => {
+        const registrationsEvent = db.events.find((event) => event.id === registrationsEventId);
+        return registrationsEvent ? (
+          <EventRegistrationsModal
+            event={registrationsEvent}
+            people={db.people}
+            canEdit={role !== "membro"}
+            onClose={() => setRegistrationsEventId(null)}
+          />
+        ) : null;
+      })()}
     </div>
   );
 }
@@ -964,6 +986,7 @@ function AgendaView({
   onSelectDate,
   onAdd,
   onMarkAttendance,
+  onManageRegistrations,
 }: {
   events: ChurchEvent[];
   month: string;
@@ -972,6 +995,7 @@ function AgendaView({
   onSelectDate: (date: string) => void;
   onAdd: () => void;
   onMarkAttendance: (eventId: string) => void;
+  onManageRegistrations: (eventId: string) => void;
 }) {
   const [year, monthNumber] = month.split("-").map(Number);
   const firstDay = new Date(year, monthNumber - 1, 1);
@@ -993,7 +1017,7 @@ function AgendaView({
           <div className="calendar-grid">{weekdays.map((day) => <div className="weekday" key={day}>{day}</div>)}{days.map((day) => { const key = dateKey(day); const dayEvents = events.filter((event) => event.date === key); const inMonth = day.getMonth() === monthNumber - 1; return <button key={key} className={`calendar-day ${inMonth ? "" : "outside"} ${key === selectedDate ? "selected" : ""} ${key === dateKey(new Date()) ? "today" : ""}`} onClick={() => onSelectDate(key)}><span className="day-number">{day.getDate()}</span><span className="day-events">{dayEvents.slice(0, 2).map((event) => <i className={`event-pill event-${event.type}`} key={event.id}>{event.title}</i>)}{dayEvents.length > 2 && <small>+{dayEvents.length - 2} eventos</small>}</span><span className="mobile-event-dots">{dayEvents.slice(0, 3).map((event) => <i className={`event-dot event-${event.type}`} key={event.id} />)}</span></button>; })}</div>
         </article>
         <aside className="agenda-aside">
-          <article className="panel selected-day-panel"><PanelHeading title={new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long" }).format(toLocalDate(selectedDate))} subtitle={selectedEvents.length ? `${selectedEvents.length} encontro${selectedEvents.length > 1 ? "s" : ""} neste dia` : "Um bom dia para criar um encontro"} />{selectedEvents.length ? <div className="selected-events">{selectedEvents.map((event) => <EventCard key={event.id} event={event} onMarkAttendance={onMarkAttendance} />)}</div> : <div className="empty-state compact-empty"><span><CalendarDays size={18} /></span><strong>Dia livre</strong><p>Use este tempo para planejar um novo encontro.</p><button className="text-button" onClick={onAdd}><Plus size={14} /> Adicionar evento</button></div>}</article>
+          <article className="panel selected-day-panel"><PanelHeading title={new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long" }).format(toLocalDate(selectedDate))} subtitle={selectedEvents.length ? `${selectedEvents.length} encontro${selectedEvents.length > 1 ? "s" : ""} neste dia` : "Um bom dia para criar um encontro"} />{selectedEvents.length ? <div className="selected-events">{selectedEvents.map((event) => <EventCard key={event.id} event={event} onMarkAttendance={onMarkAttendance} onManageRegistrations={onManageRegistrations} />)}</div> : <div className="empty-state compact-empty"><span><CalendarDays size={18} /></span><strong>Dia livre</strong><p>Use este tempo para planejar um novo encontro.</p><button className="text-button" onClick={onAdd}><Plus size={14} /> Adicionar evento</button></div>}</article>
           <article className="panel next-events-panel"><PanelHeading title="Em breve" subtitle="Próximos encontros da igreja" />{upcoming.length ? <div className="upcoming-list">{upcoming.map((event) => <EventCard key={event.id} event={event} compact />)}</div> : <p className="empty-copy">Nenhum evento futuro.</p>}</article>
         </aside>
       </section>
@@ -1001,7 +1025,17 @@ function AgendaView({
   );
 }
 
-function EventCard({ event, compact = false, onMarkAttendance }: { event: ChurchEvent; compact?: boolean; onMarkAttendance?: (eventId: string) => void }) {
+function EventCard({
+  event,
+  compact = false,
+  onMarkAttendance,
+  onManageRegistrations,
+}: {
+  event: ChurchEvent;
+  compact?: boolean;
+  onMarkAttendance?: (eventId: string) => void;
+  onManageRegistrations?: (eventId: string) => void;
+}) {
   const isPastOrToday = event.date <= dateKey(new Date());
   return (
     <div className={`event-card ${compact ? "event-card-compact" : ""}`}>
@@ -1015,6 +1049,11 @@ function EventCard({ event, compact = false, onMarkAttendance }: { event: Church
         {!compact && isPastOrToday && onMarkAttendance && (
           <button className="text-button" type="button" onClick={() => onMarkAttendance(event.id)}>
             <CalendarCheck size={13} /> {event.attendanceIds.length > 0 ? `${event.attendanceIds.length} presentes` : "Marcar presença"}
+          </button>
+        )}
+        {!compact && onManageRegistrations && (
+          <button className="text-button" type="button" onClick={() => onManageRegistrations(event.id)}>
+            <Ticket size={13} /> Inscrições
           </button>
         )}
       </div>

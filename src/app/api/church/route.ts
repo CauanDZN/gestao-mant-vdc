@@ -48,9 +48,9 @@ function toChurchDatabase(church: ChurchRecord): ChurchDatabase {
       status: status as ChurchDatabase["assets"][number]["status"],
       value, acquiredAt, responsible,
     })),
-    events: church.events.map(({ id, title, type, date, time, location, leader, attendanceIds, visitors }) => ({
+    events: church.events.map(({ id, title, type, date, time, location, leader, attendanceIds, visitors, price }) => ({
       id, title, type: type as ChurchDatabase["events"][number]["type"],
-      date, time, location, leader, attendanceIds, visitors,
+      date, time, location, leader, attendanceIds, visitors, price,
     })),
     people: church.people.map(({ id, name, phone, email, birthday, stage, group, firstVisit, notes, contactDates, cellId }) => ({
       id, name, phone, email, birthday,
@@ -173,7 +173,9 @@ export async function PUT(request: Request) {
         await tx.churchAsset.createMany({ data: data.assets.map((item) => ({ ...item, churchId: CHURCH_ID })) });
       }
       if (data.events.length) {
-        await tx.churchEvent.createMany({ data: data.events.map((item) => ({ ...item, churchId: CHURCH_ID })) });
+        await tx.churchEvent.createMany({
+          data: data.events.map((item) => ({ ...item, price: item.price ?? 0, churchId: CHURCH_ID })),
+        });
       }
       if (data.people.length) {
         await tx.churchPerson.createMany({

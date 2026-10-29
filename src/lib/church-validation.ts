@@ -43,6 +43,7 @@ export const churchDatabaseSchema = z.object({
     leader: shortText,
     attendanceIds: z.array(id).max(2000),
     visitors: z.number().int().nonnegative().max(10000),
+    price: amount.optional(),
   }).strict()).max(2000),
   people: z.array(z.object({
     id,

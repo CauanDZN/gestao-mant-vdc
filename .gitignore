@@ -30,4 +30,11 @@ yarn-error.log*
 *.tsbuildinfo
 
 .env*
+!.env.example
 /src/generated/prisma
+
+# tests
+/test-results/
+/playwright-report/
+/blob-report/
+/coverage/

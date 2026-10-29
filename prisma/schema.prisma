@@ -22,6 +22,7 @@ model Church {
   users            User[]
   budgetCategories BudgetCategory[]
   cells            Cell[]
+  courses          Course[]
   updatedAt       DateTime               @updatedAt
 }
 
@@ -140,9 +141,65 @@ model ChurchEvent {
   leader         String
   attendanceIds  String[] @default([])
   visitors       Int      @default(0)
-  church         Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  price          Float    @default(0)
+  church         Church             @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  registrations  EventRegistration[]
 
   @@index([churchId, date, time])
+}
+
+model Course {
+  id                   String             @id
+  churchId             String
+  name                 String
+  teacher              String
+  audience             String             @default("")
+  startDate            String
+  endDate              String
+  location             String             @default("")
+  vacancies            Int                @default(0)
+  price                Float              @default(0)
+  minAttendancePercent Int                @default(75)
+  createdAt            DateTime           @default(now())
+  church               Church             @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  enrollments          CourseEnrollment[]
+
+  @@index([churchId])
+}
+
+model CourseEnrollment {
+  id                String   @id
+  courseId          String
+  personId          String
+  status            String   @default("confirmado")
+  attendancePercent Int      @default(0)
+  paymentStatus     String   @default("isento")
+  pixChargeId       String?
+  pixCopyPaste      String?
+  pixQrCodeBase64   String?
+  enrolledAt        DateTime @default(now())
+  course            Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  person            ChurchPerson @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, personId])
+  @@index([courseId])
+}
+
+model EventRegistration {
+  id              String   @id
+  eventId         String
+  personId        String
+  paymentStatus   String   @default("isento")
+  amount          Float    @default(0)
+  pixChargeId     String?
+  pixCopyPaste    String?
+  pixQrCodeBase64 String?
+  registeredAt    DateTime @default(now())
+  event           ChurchEvent  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  person          ChurchPerson @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, personId])
+  @@index([eventId])
 }
 
 model ChurchPerson {
@@ -160,6 +217,8 @@ model ChurchPerson {
   cellId        String?
   church        Church   @relation(fields: [churchId], references: [id], onDelete: Cascade)
   cell          Cell?    @relation(fields: [cellId], references: [id], onDelete: SetNull)
+  courseEnrollments  CourseEnrollment[]
+  eventRegistrations EventRegistration[]
 
   @@index([churchId, stage])
   @@index([churchId, name])
